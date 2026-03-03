@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>User Login</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+  <style>
+    :root{
+      --bg-start:#e9f2fb;
+      --bg-end:#e6eef8;
+      --card-bg:#ffffff;
+      --primary:#3b82f6;
+      --primary-dark:#2563eb;
+      --text:#0f2140;
+      --muted:#6b7a90;
+      --input-bg:#f6fbff;
+      --line:#e6eef8;
+    }
+    * { margin:0; padding:0; box-sizing:border-box; font-family:'Inter', sans-serif; }
+    body { height:100vh; display:flex; align-items:center; justify-content:center; background:linear-gradient(135deg,var(--bg-start),var(--bg-end)); position:relative; }
+    .login-container { width:380px; background:#fff; padding:40px 36px; border-radius:16px; box-shadow:0 20px 45px rgba(0,0,0,0.08); position:relative; z-index:1; }
+    .logo { font-size:1.4rem; font-weight:600; color:var(--text); margin-bottom:6px; }
+    .subtitle { font-size:0.85rem; color:#6b7a90; margin-bottom:28px; }
+    .input-group { margin-bottom:18px; }
+    label { display:block; font-size:0.8rem; color:var(--muted); margin-bottom:6px; font-weight:500; }
+    input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid var(--line); background:var(--input-bg); font-size:0.9rem; transition:all 0.2s ease; color:var(--text); }
+    input:focus { outline:none; border-color:var(--primary); background:#fff; box-shadow:0 0 0 4px rgba(59,130,246,0.10); }
+    .login-btn { width:100%; margin-top:10px; padding:12px; border:none; border-radius:10px; background:linear-gradient(90deg,var(--primary),var(--primary-dark)); color:#fff; font-size:0.95rem; font-weight:500; cursor:pointer; transition:all 0.16s ease; box-shadow:0 6px 18px rgba(37,99,235,0.12); }
+    .login-btn:hover { transform:translateY(-1px); box-shadow:0 10px 28px rgba(37,99,235,0.14); }
+    .footer-links { margin-top:18px; text-align:center; font-size:0.8rem; color:#7b8ba3; }
+    .footer-links a { color:var(--primary); text-decoration:none; font-weight:500; }
+    .footer-links a:hover { text-decoration:underline; }
+    .license { margin-top:28px; text-align:center; font-size:0.7rem; color:var(--muted); }
+
+    /* Loading overlay */
+    .loading-overlay {
+      position: absolute;
+      top:0; left:0; width:100%; height:100%;
+      background: rgba(255,255,255,0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      font-weight:600;
+      color: #3b82f6;
+      z-index: 10;
+      display: none;
+      flex-direction: column;
+      text-align: center;
+    }
+    .progress-text { margin-top:10px; font-size:0.95rem; color:#2563eb; }
+  </style>
+</head>
+<body>
+
+<div class="login-container">
+  <div class="logo">C-A Health Systems</div>
+  <div class="subtitle">Secure User Authentication Portal</div>
+
+  <form onsubmit="event.preventDefault(); auth();">
+
+    <div class="input-group">
+      <label>Email Address</label>
+      <input id="email" type="email" placeholder="user@domain.com" required />
+    </div>
+
+    <div class="input-group">
+      <label>Password</label>
+      <input id="password" type="password" placeholder="Enter password" required />
+    </div>
+
+    <button type="submit" class="login-btn">Sign In</button>
+  </form>
+
+  <div class="footer-links">
+    <a href="#">Forgot password?</a>
+  </div>
+
+  <div class="license">
+    CC0 License • 2026 • C-A Software
+  </div>
+</div>
+
+<div class="loading-overlay" id="loading">
+  Loading data…
+  <div class="progress-text" id="progressText">0%</div>
+</div>
+
+<script type="module">
+import { S3Client, ListObjectsV2Command, GetObjectCommand } from "https://cdn.jsdelivr.net/npm/@aws-sdk/client-s3/dist/aws-sdk-client-s3.min.js";
+
+// Configure S3 client (internal testing only)
+const s3 = new S3Client({
+    region: "us-east-2",
+    credentials: {
+        accessKeyId: "AKIA2UC3AI5QQAVDHGXZ",      
+        secretAccessKey: "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"
+    }
+});
+
+const loading = document.getElementById("loading");
+const progressText = document.getElementById("progressText");
+
+// Fetch all JSONs in a folder with progress update
+async function fetchFolder(bucket, prefix) {
+    const list = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }));
+    const jsonKeys = list.Contents?.filter(obj => obj.Key.endsWith('.json')).map(obj => obj.Key) || [];
+
+    const results = [];
+    for (let i=0; i<jsonKeys.length; i++) {
+        const key = jsonKeys[i];
+        const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        const text = await obj.Body.transformToString();
+        results.push(...JSON.parse(text));
+        progressText.textContent = `${prefix}: ${i+1}/${jsonKeys.length}`;
+    }
+
+    return results;
+}
+
+// Download both CSVs and store in localStorage
+async function downloadAllToLocalStorage() {
+    loading.style.display = "flex";
+
+    try {
+        const steps = await fetchFolder("compu-alert-s3", "steps");
+        const hr = await fetchFolder("compu-alert-s3", "hr");
+
+        steps.sort((a,b)=> new Date(a.startTime)-new Date(b.startTime));
+        hr.sort((a,b)=> new Date(a.startTime)-new Date(b.startTime));
+
+        localStorage.setItem("stepsCSV", steps.map(x=>x.steps).join(','));
+        localStorage.setItem("hrCSV", hr.map(x=>x.hr).join(','));
+    } finally {
+        loading.style.display = "none";
+    }
+}
+
+// Auth + fetch
+async function auth() {
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+
+    if(email === "user@domain.com" && password === "password123") {
+        try {
+            await downloadAllToLocalStorage();
+            location.href = "test-ca.html";
+        } catch(err) {
+            alert("Login succeeded, but data failed to load.");
+            console.error(err);
+        }
+    } else {
+        alert("Invalid email or password. Please try again.");
+    }
+}
+</script>
+
+</body>
+</html>

@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>User Login</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg-start:#e9f2fb; --bg-end:#e6eef8; --card-bg:#ffffff;
+  --primary:#3b82f6; --primary-dark:#2563eb; --text:#0f2140;
+  --muted:#6b7a90; --input-bg:#f6fbff; --line:#e6eef8;
+}
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Inter',sans-serif;}
+body{height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,var(--bg-start),var(--bg-end));position:relative;}
+.login-container{width:380px;background:#fff;padding:40px 36px;border-radius:16px;box-shadow:0 20px 45px rgba(0,0,0,0.08);position:relative; z-index:1;}
+.logo{font-size:1.4rem;font-weight:600;color:var(--text);margin-bottom:6px;}
+.subtitle{font-size:0.85rem;color:#6b7a90;margin-bottom:28px;}
+.input-group{margin-bottom:18px;}
+label{display:block;font-size:0.8rem;color:var(--muted);margin-bottom:6px;font-weight:500;}
+input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid var(--line);background:var(--input-bg);font-size:0.9rem;transition:all 0.2s ease;color:var(--text);}
+input:focus{outline:none;border-color:var(--primary);background:#fff;box-shadow:0 0 0 4px rgba(59,130,246,0.10);}
+.login-btn{width:100%;margin-top:10px;padding:12px;border:none;border-radius:10px;background:linear-gradient(90deg,var(--primary),var(--primary-dark));color:#fff;font-size:0.95rem;font-weight:500;cursor:pointer;transition:all 0.16s ease;box-shadow:0 6px 18px rgba(37,99,235,0.12);}
+.login-btn:hover{transform:translateY(-1px);box-shadow:0 10px 28px rgba(37,99,235,0.14);}
+.footer-links{margin-top:18px;text-align:center;font-size:0.8rem;color:#7b8ba3;}
+.footer-links a{color:var(--primary);text-decoration:none;font-weight:500;}
+.footer-links a:hover{text-decoration:underline;}
+.license{margin-top:28px;text-align:center;font-size:0.7rem;color:var(--muted);}
+.loading-overlay{position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(255,255,255,0.9);display:flex;align-items:center;justify-content:center;font-size:1.1rem;font-weight:600;color:#3b82f6;z-index:10;display:none;flex-direction:column;text-align:center;}
+.progress-text{margin-top:10px;font-size:0.95rem;color:#2563eb;}
+</style>
+</head>
+<body>
+
+<div class="login-container">
+  <div class="logo">C-A Health Systems</div>
+  <div class="subtitle">Secure User Authentication Portal</div>
+  <form onsubmit="event.preventDefault(); auth();">
+    <div class="input-group">
+      <label>Email Address</label>
+      <input id="email" type="email" placeholder="user@domain.com" required />
+    </div>
+    <div class="input-group">
+      <label>Password</label>
+      <input id="password" type="password" placeholder="Enter password" required />
+    </div>
+    <button type="submit" class="login-btn">Sign In</button>
+  </form>
+  <div class="footer-links">
+    <a href="#">Forgot password?</a>
+  </div>
+  <div class="license">CC0 License • 2026 • C-A Software</div>
+</div>
+
+<div class="loading-overlay" id="loading">
+  Loading data…
+  <div class="progress-text" id="progressText">0%</div>
+</div>
+<script>
+const bucket = "https://compu-alert-s3.s3.us-east-2.amazonaws.com";
+const folders = ["steps", "hr"];
+
+const loading = document.getElementById("loading");
+const progressText = document.getElementById("progressText");
+
+/* ==============================
+   Parse S3 XML
+================================ */
+function parseS3ListXML(xmlText){
+  const parser = new DOMParser();
+  const xml = parser.parseFromString(xmlText, "application/xml");
+
+  if (xml.querySelector("parsererror")) {
+    throw new Error("Invalid XML from S3");
+  }
+
+  return Array.from(xml.getElementsByTagName("Key"))
+    .map(k => k.textContent)
+    .filter(Boolean);
+}
+
+/* ==============================
+   Fetch All Records From Folder
+================================ */
+async function fetchFolderRecords(folder){
+
+  const listURL = `${bucket}?list-type=2&prefix=${folder}/`;
+
+  const res = await fetch(listURL);
+  if (!res.ok) throw new Error(`List failed: ${res.status}`);
+
+  const xmlText = await res.text();
+  const files = parseS3ListXML(xmlText)
+    .filter(f => f.endsWith(".json"));
+
+  if (!files.length) throw new Error(`No JSON files in ${folder}`);
+
+  const records = [];
+
+  for (let i = 0; i < files.length; i++) {
+    const fileURL = `${bucket}/${files[i]}`;
+    const r = await fetch(fileURL);
+    if (!r.ok) throw new Error(`Fetch failed: ${files[i]}`);
+
+    const json = await r.json();
+
+    if (Array.isArray(json)) {
+      records.push(...json);
+    } else if (json) {
+      records.push(json);
+    }
+
+    progressText.textContent =
+      `${folder}: ${i+1}/${files.length}`;
+  }
+
+  return records;
+}
+
+/* ==============================
+   Group & Merge By Date
+================================ */
+function buildDailyCSV(stepsData, hrData){
+
+  const daily = {};
+
+  function extractDate(ts){
+    // Prevent timezone shift
+    return ts ? ts.substring(0,10) : null;
+  }
+
+  /* ----- Steps: SUM per day ----- */
+  for (const r of stepsData) {
+    if (!r.startTime) continue;
+
+    const date = extractDate(r.startTime);
+    if (!date) continue;
+
+    if (!daily[date]) {
+      daily[date] = { steps: 0, hrValues: [] };
+    }
+
+    daily[date].steps += r.steps ?? 0;
+  }
+
+  /* ----- HR: AVG per day ----- */
+  for (const r of hrData) {
+    if (!r.startTime) continue;
+
+    const date = extractDate(r.startTime);
+    if (!date) continue;
+
+    if (!daily[date]) {
+      daily[date] = { steps: 0, hrValues: [] };
+    }
+
+    if (r.hr != null) {
+      daily[date].hrValues.push(r.hr);
+    }
+  }
+
+  /* ----- Convert to CSV ----- */
+  const dates = Object.keys(daily).sort();
+
+  const rows = [];
+
+  for (const date of dates) {
+
+    const steps = daily[date].steps;
+
+    const hrValues = daily[date].hrValues;
+    const hr = hrValues.length
+      ? Math.round(
+          hrValues.reduce((a,b)=>a+b,0) / hrValues.length
+        )
+      : 0;
+
+    rows.push(`${date},${steps},${hr}`);
+  }
+
+  return "date,steps,hr\n" + rows.join("\n");
+}
+
+/* ==============================
+   Demo Fallback
+================================ */
+function generateDemoCSV(){
+
+  const daily = {};
+  const count = 30;
+
+  for (let i = 0; i < count; i++) {
+
+    const date = new Date();
+    date.setDate(date.getDate() - i);
+
+    const iso = date.toISOString().substring(0,10);
+
+    daily[iso] = {
+      steps: Math.floor(8000 + Math.random()*4000),
+      hr: Math.floor(65 + Math.random()*15)
+    };
+  }
+
+  const dates = Object.keys(daily).sort();
+
+  const rows = dates.map(d =>
+    `${d},${daily[d].steps},${daily[d].hr}`
+  );
+
+  return "date,steps,hr\n" + rows.join("\n");
+}
+
+/* ==============================
+   Download & Store
+================================ */
+async function downloadAllToLocalStorage(){
+
+  loading.style.display = "flex";
+  progressText.textContent = "Loading...";
+
+  try {
+
+    const stepsData = await fetchFolderRecords("steps");
+    const hrData = await fetchFolderRecords("hr");
+
+    const csv = buildDailyCSV(stepsData, hrData);
+
+    localStorage.setItem("dailyHealthCSV", csv);
+    localStorage.setItem("data_source", "S3");
+
+  } catch (e) {
+
+    console.warn("Using demo data:", e.message);
+
+    const csv = generateDemoCSV();
+    localStorage.setItem("dailyHealthCSV", csv);
+    localStorage.setItem("data_source", "DEMO");
+
+  } finally {
+    loading.style.display = "none";
+  }
+}
+
+/* ==============================
+   Auth
+================================ */
+async function auth(){
+
+  const email =
+    document.getElementById("email").value.trim();
+
+  const password =
+    document.getElementById("password").value.trim();
+
+  if (email === "user@domain.com" &&
+      password === "password123") {
+
+    await downloadAllToLocalStorage();
+    location.href = "test-ca.html";
+
+  } else {
+    alert("Invalid email or password");
+  }
+}
+</script>
+</body>
+</html>
